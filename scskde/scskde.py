@@ -27,6 +27,7 @@ class SCSKDE():
                 Defaults to 1.
             orderx : int, optional
                 Order of model, i.e. longest time lag, for exogenous features.
+                Should be less than or equal to ordern for current version.
                 Defaults to 0.
             bw_method : str, optional
                 KDE bandwidth selection method. Options are the same as for 
@@ -38,6 +39,10 @@ class SCSKDE():
                 Show tqdm toolbar during fitting and simulation, or not.
                 Defaults to True.
         """
+
+        if orderx > ordern:
+            print(f'orderx ({orderx}) should be <= ordern ({ordern})')
+            return None
 
         self.period = period
         self.ordern = ordern
@@ -97,8 +102,9 @@ class SCSKDE():
             if set(mx) != set(self.periods):
                 print(f'Periods `m` in `dep_exog` must match {self.periods}')
                 return None
-            if set(nx) != set(range(X_exog.shape[1])):
-                print(f'Variables `n` in `dep_exog` must match {range(X_exog.shape[1])}')
+            if not set(nx).issubset(set(range(X_exog.shape[1]))):
+                print('Variables `n` in `dep_exog` must be a subset of '
+                      f'{range(X_exog.shape[1])}')
                 return None
 
             self.dx = dep_exog
@@ -134,22 +140,24 @@ class SCSKDE():
                 if X_exog is None:
                     XX = []
                 else:
-                    XX = [np.roll(Xx, -lag, axis=0)[:,self.dx[m,n]]
+                    XX = [np.roll(Xx, -lag, axis=0)[m:,self.dx[m,n]]
                           for lag in range(self.orderx+1)
                           if self.dx.get((m,n), None) is not None]
                 XN = ([np.roll(Xn, -lag, axis=0)[:,self.dn[m,n]]
                        for lag in range(self.ordern)] +
                       [np.roll(Xn[:,[n]], -self.ordern, axis=0)])
-                self.Xs[m,n] = np.hstack(XX + XN)[:-self.order:self.period]
+                # Handle 'aliasing' that happens because of rolling
+                meff = (m + self.order) % self.period
+                self.Xs[meff,n] = np.hstack(XX + XN)[m:-self.order:self.period]
 
                 # Fit KDEs
                 if self.bw_method == 'silverman':
-                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
-                    bw = self.models[m,n].silverman_factor_ref().mean()
-                    self.models[m,n].set_bandwidth(bw_method=bw)
+                    self.models[meff,n] = gaussian_kde(self.Xs[meff,n].T)
+                    bw = self.models[meff,n].silverman_factor_ref().mean()
+                    self.models[meff,n].set_bandwidth(bw_method=bw)
                 else:
-                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
-                    self.models[m,n].set_bandwidth(bw_method=self.bw_method,
+                    self.models[meff,n] = gaussian_kde(self.Xs[meff,n].T)
+                    self.models[meff,n].set_bandwidth(bw_method=self.bw_method,
                                                    bw_type=self.bw_type)
                 pbar.update(1)
         pbar.close()
