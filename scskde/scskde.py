@@ -26,10 +26,10 @@ class SCSKDE():
                 Should be less than or equal to ordern for current version.
                 Defaults to 0.
             bw_method : str, optional
-                KDE bandwidth selection method. Options are the same as for 
+                KDE bandwidth selection method. Options are the same as for
                 `kdetools.gaussian_kde.set_bandwidth`. Defaults to 'silverman'.
             bw_type : str, optional
-                Type of bandwidth matrix used. Options are the same as for 
+                Type of bandwidth matrix used. Options are the same as for
                 `kdetools.gaussian_kde.set_bandwidth`. Defaults to 'covariance'.
             verbose : bool, optional
                 Show tqdm toolbar during fitting and simulation, or not.
@@ -53,93 +53,88 @@ class SCSKDE():
         self.Xs = {}
         self.models = {}
 
-    def fit(self, X_endog, dep_endog, X_exog=None, dep_exog=None,
-            periods=None):
+    def fit(self, Xn, depn, Xx=None, depx=None, periods=None):
         """Fit model.
 
         Parameters
         ----------
-            X_endog : ndarray
-                Training data for endogenous features only.
-            dep_endog : dict
+            Xn : ndarray
+                Training data for endogenous features only. (m, n) 2D array
+                of `m` samples and `n` features.
+            depn : dict
                 Dependency graph of endogenous features on other endogenous
-                features. Structure is as follows: 
-                    {(m1, n1): [v1, v2, ..., vj],
-                     (m1, n2): [v1, v2, ..., vj],
+                features. Structure is as follows:
+                    {(m1, n1): [n1, n2, ..., nj],
+                     (m1, n2): [n1, n2, ..., nj],
                      ...,
-                     (mi, nj): [v1, v2, ..., vj]}
-                for `i` periods and `j` endogenous features.
-                Keys of the dictionary must cover all combinations of periods
-                and endogenous features - all features being modelled must
-                depend on something.
-            X_exog : ndarray, optional
-                Exogenous forcing. Currently only support a single realisation
-                of `X_exog`. Defaults to None.
-            dep_exog : dict, optional
+                     (mi, nj): [n1, n2, ..., nj]}
+                for periods `mi`  and endogenous features `nj`.
+                Keys must cover all combinations of periods and endogenous
+                features - modelled features must depend on something.
+            Xx : ndarray, optional
+                Exogenous forcing. Defaults to None.
+            depx : dict, optional
                 Dependency graph of endogenous features on exogenous
                 features. Structure is as follows: 
-                    {(m1, n1): [w1, w2, ..., wk],
-                     (m1, n2): [w1, w2, ..., wk],
+                    {(m1, n1): [x1, x2, ..., xk],
+                     (m1, n2): [x1, x2, ..., xk],
                      ...,
-                     (mi, nj): [w1, w2, ..., wk]}
-                for `i` periods, `j` endogenous and `k` exogenous features.
-                Unlike `dep_endog`, the keys of `dep_exog` do not need to
-                cover all combinations of periods and endogenous features.
-                Defaults to None.
+                     (mi, nj): [x1, x2, ..., xk]}
+                for periods `mi`, endogenous `nj` and exogenous `xk`.
+                The keys of `depx` need not cover all combinations of periods
+                and endogenous features. Defaults to None.
             periods : ndarray, optional
-                PeriodID for each time step, allowing different models to be
-                fit to subsets of the data. Must be the same length as
-                as X_endog.shape[0]. If None (default), all data is used to
-                fit a single model.
+                PeriodID for each time step, so different models can be fit to
+                subsets of the data. If None (default), all data used to fit a
+                single model, otherwise must be the same length as Xn.shape[0].
         """
 
         # Input validation
         if periods is None:
-            periods = np.zeros(X_endog.shape[0])
+            periods = np.zeros(Xn.shape[0])
             self.uperiods = {0}
-        elif periods.shape[0] == X_endog.shape[0]:
+        elif periods.shape[0] == Xn.shape[0]:
             periods = np.array(periods)
             self.uperiods = set(periods)
         else:
-            print('`periods` must be the same length as `X_endog.shape[0]`')
+            print('`periods` must be the same length as `Xn.shape[0]`')
             return None
 
-        if dep_endog is None:
-            print('Dependency dictionary `dep_endog` must be specified')
+        if depn is None:
+            print('Dependency dictionary `depn` must be specified')
             return None
 
-        if X_exog is not None:
-            if X_endog.shape[0] != X_exog.shape[0]:
-                print('`X_exog` must have the same number of rows as `X_endog`')
+        if Xx is not None:
+            if Xx.shape[0] != Xn.shape[0]:
+                print('`Xx` must have the same number of rows as `Xn`')
                 return None
-            if dep_exog is None:
-                print('Dependency dictionary `dep_exog` must be specified')
+            if depx is None:
+                print('Dependency dictionary `depx` must be specified')
                 return None
-            mx, nx = zip(*[(m, n) for m, n in dep_exog.keys()])
+            mx, nx = zip(*[(m, n) for m, n in depx.keys()])
             if set(mx) != self.uperiods:
-                print(f'Periods `m` in `dep_exog` must match {self.uperiods}')
+                print(f'Periods `m` in `depx` must match {self.uperiods}')
                 return None
-            if not set(nx).issubset(set(range(X_exog.shape[1]))):
-                print('Variables `n` in `dep_exog` must be a subset of '
-                      f'{range(X_exog.shape[1])}')
+            if not set(nx).issubset(set(range(Xx.shape[1]))):
+                print('Variables `n` in `depx` must be a subset of '
+                      f'{range(Xx.shape[1])}')
                 return None
 
-            self.dx = dep_exog
-            self.Nx = X_exog.shape[1]
-            Xx = np.array(X_exog)
+            self.dx = depx
+            self.Nx = Xx.shape[1]
+            Xx = np.array(Xx)
 
-        mn, nn = zip(*[(m, n) for m, n in dep_endog.keys()])
+        mn, nn = zip(*[(m, n) for m, n in depn.keys()])
         if set(mn) != set(periods):
-            print(f'Periods `m` in `dep_endog` must match {set(periods)}')
+            print(f'Periods `m` in `depn` must match {set(periods)}')
             return None
-        if set(nn) != set(range(X_endog.shape[1])):
-            print(f'Variables `n` in `dep_endog` must match {range(X_endog.shape[1])}')
+        if set(nn) != set(range(Xn.shape[1])):
+            print(f'Variables `n` in `depn` must match {range(Xn.shape[1])}')
             return None
 
-        self.dn = dep_endog
-        self.Nn = X_endog.shape[1]
-        Xn = np.array(X_endog)
-        #M = Xn.shape[0]
+        self.dn = depn
+        self.Nn = Xn.shape[1]
+        Xn = np.array(Xn)
 
         # Loop over periods
         pbar = tqdm(total=len(self.uperiods)*self.Nn, disable=not self.verbose)
@@ -152,7 +147,7 @@ class SCSKDE():
                       [np.roll(Xn[:,[n]], -self.ordern, axis=0)])
 
                 # Exogenous variables
-                if X_exog is None:
+                if Xx is None:
                     XX = []
                 else:
                     lags = range(self.ordern-self.orderx, self.ordern+1)
@@ -175,7 +170,7 @@ class SCSKDE():
                 pbar.update(1)
         pbar.close()
 
-    def simulate(self, Nt, X0, X_exog=None, batches=1, periods=None, seed=42):
+    def simulate(self, Nt, X0, Xx=None, batches=1, periods=None, seed=42):
         """Simulate from fitted model.
 
         Parameters
@@ -184,22 +179,22 @@ class SCSKDE():
                 Number of time steps to simulate.
             X0 : ndarray
                 Inital values to be used in the simulation. If using different
-                initial values for each batch, X0 must be 3D with shape
+                initial values for each batch, `X0` must be 3D with shape
                 (# batches, model order, # endogenous features). If using the
-                same initial values for each batch, X0 must be 2D with shape
+                same initial values for each batch, `X0` must be 2D with shape
                 (model order, # endogenous features).
-            X_exog : ndarray, optional
+            Xx : ndarray, optional
                 Exogenous forcing to be used in the simulation. If using
-                different forcings for each batch, X_exog must be 3D with shape
+                different forcings for each batch, `Xx` must be 3D with shape
                 (# batches, time steps, # exogenous features). If using the
-                same forcing for each batch, X_exog must be 2D with shape
+                same forcing for each batch, `Xx` must be 2D with shape
                 (model order, # exogenous features).
             batches : int, optional
                 Number of batches, or ensemble members, to simulate.
             periods : ndarray, optional
                 PeriodID for each time step, allowing different models to be
-                used for subsets of the data. Must be length Nt. If None (default)
-                all time steps modelled identically.
+                used for subsets of the data. Must be length `Nt`.
+                If None (default) all time steps modelled identically.
             seed : {int, `np.random.Generator`, `np.random.RandomState`}, optional
                 Seed or random number generator state variable.
 
@@ -215,12 +210,16 @@ class SCSKDE():
                   ' (# batches, model order, # of endogenous features)'
                   f' ({batches}, {self.order}, {self.Nn})')
             return None
-        if X_exog is not None:
-            if X_exog.shape != (batches, Nt, self.Nx):
-                print(f'`X_exog.shape` {X_exog.shape} must be consistent with'
+        else:
+            X0 = np.array(X0)
+        if Xx is not None:
+            if Xx.shape != (batches, Nt, self.Nx):
+                print(f'`Xx.shape` {Xx.shape} must be consistent with'
                       ' (# batches, time steps, # of exogenous features)'
                       f' ({batches}, {Nt}, {self.Nx})')
                 return None
+            else:
+                Xx = np.array(Xx)
         if periods is None:
             periods = np.zeros(Nt, dtype=int)
         elif periods.shape[0] == Nt:
@@ -246,11 +245,11 @@ class SCSKDE():
             # Loop over variables
             for n in range(self.Nn):
                 # Define conditioning vector
-                if X_exog is None:
+                if Xx is None:
                     x_cond = np.hstack([Y[:,i-lag,self.dn[m,n]]
                                         for lag in range(self.ordern, 0, -1)])
                 else:
-                    x_cond_x = [X_exog[:,i-lag,self.dx[m,n]]
+                    x_cond_x = [Xx[:,i-lag,self.dx[m,n]]
                                 for lag in range(self.orderx, -1, -1)
                                 if self.dx.get((m,n), None) is not None]
                     x_cond_n = [Y[:,i-lag,self.dn[m,n]]
