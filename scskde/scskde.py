@@ -12,16 +12,12 @@ class SCSKDE():
     synthetic realisations with optional exogenous forcing.
     """
 
-    def __init__(self, period=1, ordern=1, orderx=0, bw_method='silverman', 
+    def __init__(self, ordern=1, orderx=0, bw_method='silverman',
                  bw_type='covariance', verbose=True):
         """Class constructor.
 
         Parameters
         ----------
-            period : int, optional
-                Period to be modelled. For monthly data modelled without
-                seasonality, period=1, but with monthly seasonality, period=12.
-                Currently only support simple periodicity. Defaults to 1.
             ordern : int, optional
                 Order of model, i.e. longest time lag, for endogenous features.
                 Defaults to 1.
@@ -43,20 +39,22 @@ class SCSKDE():
         if orderx > ordern:
             print(f'orderx ({orderx}) should be <= ordern ({ordern})')
             return None
+        if ordern < 1:
+            print(f'ordern ({ordern}) should be >= 1')
+            return None
 
-        self.period = period
         self.ordern = ordern
         self.orderx = orderx
         self.bw_method = bw_method
         self.bw_type = bw_type
         self.verbose = verbose
 
-        self.periods = range(period)
         self.order = max(ordern, orderx)
         self.Xs = {}
         self.models = {}
 
-    def fit(self, X_endog, dep_endog, X_exog=None, dep_exog=None):
+    def fit(self, X_endog, dep_endog, X_exog=None, dep_exog=None,
+            periods=None):
         """Fit model.
 
         Parameters
@@ -88,19 +86,38 @@ class SCSKDE():
                 Unlike `dep_endog`, the keys of `dep_exog` do not need to
                 cover all combinations of periods and endogenous features.
                 Defaults to None.
+            periods : ndarray, optional
+                PeriodID for each time step, allowing different models to be
+                fit to subsets of the data. Must be the same length as
+                as X_endog.shape[0]. If None (default), all data is used to
+                fit a single model.
         """
 
         # Input validation
+        if periods is None:
+            periods = np.zeros(X_endog.shape[0])
+            self.uperiods = {0}
+        elif periods.shape[0] == X_endog.shape[0]:
+            periods = np.array(periods)
+            self.uperiods = set(periods)
+        else:
+            print('`periods` must be the same length as `X_endog.shape[0]`')
+            return None
+
+        if dep_endog is None:
+            print('Dependency dictionary `dep_endog` must be specified')
+            return None
+
         if X_exog is not None:
             if X_endog.shape[0] != X_exog.shape[0]:
-                print('`X_endog` and `X_exog` should have the same number of rows')
+                print('`X_exog` must have the same number of rows as `X_endog`')
                 return None
             if dep_exog is None:
                 print('Dependency dictionary `dep_exog` must be specified')
                 return None
             mx, nx = zip(*[(m, n) for m, n in dep_exog.keys()])
-            if set(mx) != set(self.periods):
-                print(f'Periods `m` in `dep_exog` must match {self.periods}')
+            if set(mx) != self.uperiods:
+                print(f'Periods `m` in `dep_exog` must match {self.uperiods}')
                 return None
             if not set(nx).issubset(set(range(X_exog.shape[1]))):
                 print('Variables `n` in `dep_exog` must be a subset of '
@@ -112,8 +129,8 @@ class SCSKDE():
             Xx = np.array(X_exog)
 
         mn, nn = zip(*[(m, n) for m, n in dep_endog.keys()])
-        if set(mn) != set(self.periods):
-            print(f'Periods `m` in `dep_endog` must match {self.periods}')
+        if set(mn) != set(periods):
+            print(f'Periods `m` in `dep_endog` must match {set(periods)}')
             return None
         if set(nn) != set(range(X_endog.shape[1])):
             print(f'Variables `n` in `dep_endog` must match {range(X_endog.shape[1])}')
@@ -121,53 +138,49 @@ class SCSKDE():
 
         self.dn = dep_endog
         self.Nn = X_endog.shape[1]
-        self.Nx = 0
         Xn = np.array(X_endog)
-        M = Xn.shape[0]
-
-        # The number of records must be a multiple of the number of periods
-        if M % self.period != 0:
-            print('Number of features in input data must be a '
-                 f'multiple of the model periodicity {self.period}')
-            return None
+        #M = Xn.shape[0]
 
         # Loop over periods
-        pbar = tqdm(total=self.period*self.Nn, disable=not self.verbose)
-        for m in self.periods:
-            # Loop over variables to be modelled
+        pbar = tqdm(total=len(self.uperiods)*self.Nn, disable=not self.verbose)
+        for m in self.uperiods:
+            # Loop over endogenous variables to be modelled
             for n in range(self.Nn):
-                # Define training matrices
+                # Endogenous variables
+                lags = range(self.ordern)
+                XN = ([np.roll(Xn, -lag, axis=0)[:,self.dn[m,n]] for lag in lags] +
+                      [np.roll(Xn[:,[n]], -self.ordern, axis=0)])
+
+                # Exogenous variables
                 if X_exog is None:
                     XX = []
                 else:
-                    XX = [np.roll(Xx, -lag, axis=0)[m:,self.dx[m,n]]
-                          for lag in range(self.orderx+1)
-                          if self.dx.get((m,n), None) is not None]
-                XN = ([np.roll(Xn, -lag, axis=0)[:,self.dn[m,n]]
-                       for lag in range(self.ordern)] +
-                      [np.roll(Xn[:,[n]], -self.ordern, axis=0)])
-                # Handle 'aliasing' that happens because of rolling
-                meff = (m + self.order) % self.period
-                self.Xs[meff,n] = np.hstack(XX + XN)[m:-self.order:self.period]
+                    lags = range(self.ordern-self.orderx, self.ordern+1)
+                    XX = [np.roll(Xx, -lag, axis=0)[:,self.dx[m,n]]
+                          for lag in lags if self.dx.get((m,n), None) is not None]
+
+                # Select relevant records only
+                mask = np.roll(periods, -self.order)[:-self.order] == m
+                self.Xs[m,n] = np.hstack(XX + XN)[:-self.order][mask]
 
                 # Fit KDEs
                 if self.bw_method == 'silverman':
-                    self.models[meff,n] = gaussian_kde(self.Xs[meff,n].T)
-                    bw = self.models[meff,n].silverman_factor_ref().mean()
-                    self.models[meff,n].set_bandwidth(bw_method=bw)
+                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
+                    bw = self.models[m,n].silverman_factor_ref().mean()
+                    self.models[m,n].set_bandwidth(bw_method=bw)
                 else:
-                    self.models[meff,n] = gaussian_kde(self.Xs[meff,n].T)
-                    self.models[meff,n].set_bandwidth(bw_method=self.bw_method,
+                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
+                    self.models[m,n].set_bandwidth(bw_method=self.bw_method,
                                                    bw_type=self.bw_type)
                 pbar.update(1)
         pbar.close()
 
-    def simulate(self, Msim, X0, X_exog=None, batches=1, seed=42):
+    def simulate(self, Nt, X0, X_exog=None, batches=1, periods=None, seed=42):
         """Simulate from fitted model.
 
         Parameters
         ----------
-            Msim : int
+            Nt : int
                 Number of time steps to simulate.
             X0 : ndarray
                 Inital values to be used in the simulation. If using different
@@ -176,10 +189,17 @@ class SCSKDE():
                 same initial values for each batch, X0 must be 2D with shape
                 (model order, # endogenous features).
             X_exog : ndarray, optional
-                Exogenous forcing. Currently only support a single realisation
-                of X_exog to be applied to all batches.
+                Exogenous forcing to be used in the simulation. If using
+                different forcings for each batch, X_exog must be 3D with shape
+                (# batches, time steps, # exogenous features). If using the
+                same forcing for each batch, X_exog must be 2D with shape
+                (model order, # exogenous features).
             batches : int, optional
                 Number of batches, or ensemble members, to simulate.
+            periods : ndarray, optional
+                PeriodID for each time step, allowing different models to be
+                used for subsets of the data. Must be length Nt. If None (default)
+                all time steps modelled identically.
             seed : {int, `np.random.Generator`, `np.random.RandomState`}, optional
                 Seed or random number generator state variable.
 
@@ -190,26 +210,39 @@ class SCSKDE():
         """
 
         # Input validation
-        if X0.shape != (self.order, self.Nn):
-            print(f'Shape of `X0` ({X0.shape}) must be consistent with the '
-                  '(# batches, model order, # number of endogenous features)'
-                  f' ({batches}, {self.order}, {self.Nn}')
+        if X0.shape != (batches, self.order, self.Nn):
+            print(f'`X0.shape` {X0.shape} must be consistent with'
+                  ' (# batches, model order, # of endogenous features)'
+                  f' ({batches}, {self.order}, {self.Nn})')
             return None
         if X_exog is not None:
-            if X_exog.shape[0] != Msim:
-                print('`X_exog` should have the same number of rows as `Msim`')
+            if X_exog.shape != (batches, Nt, self.Nx):
+                print(f'`X_exog.shape` {X_exog.shape} must be consistent with'
+                      ' (# batches, time steps, # of exogenous features)'
+                      f' ({batches}, {Nt}, {self.Nx})')
                 return None
+        if periods is None:
+            periods = np.zeros(Nt, dtype=int)
+        elif periods.shape[0] == Nt:
+            if set(periods).issubset(self.uperiods):
+                periods = np.array(periods)
+            else:
+                print(f'`periods` has periodIDs not in {self.uperiods}')
+                return None
+        else:
+            print(f'`periods` must be length Nt={Nt} or `None`')
+            return None
 
         # Initialise random number generator
         prng = np.random.RandomState(seed)
 
         # Initialise output array
-        Y = np.zeros(shape=(batches, Msim, self.Nn))
+        Y = np.zeros(shape=(batches, Nt, self.Nn))
         Y[:,:self.order,:] = X0
 
         # Loop over time steps
-        for i in tqdm(range(self.order, Msim), disable=not self.verbose):
-            m = i % self.period
+        for i in tqdm(range(self.order, Nt), disable=not self.verbose):
+            m = periods[i]
             # Loop over variables
             for n in range(self.Nn):
                 # Define conditioning vector
@@ -217,7 +250,7 @@ class SCSKDE():
                     x_cond = np.hstack([Y[:,i-lag,self.dn[m,n]]
                                         for lag in range(self.ordern, 0, -1)])
                 else:
-                    x_cond_x = [X_exog[i-lag,self.dx[m,n]]
+                    x_cond_x = [X_exog[:,i-lag,self.dx[m,n]]
                                 for lag in range(self.orderx, -1, -1)
                                 if self.dx.get((m,n), None) is not None]
                     x_cond_n = [Y[:,i-lag,self.dn[m,n]]
