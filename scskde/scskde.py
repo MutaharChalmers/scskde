@@ -3,7 +3,7 @@
 
 import os
 import numpy as np
-from kdetools import gaussian_kde
+import kdetools as kt
 import json
 from tqdm.auto import tqdm
 
@@ -173,13 +173,13 @@ class SCSKDE():
 
                 # Fit KDEs
                 if self.bw_method == 'silverman_ref':
-                    self.models[m,n] = gaussian_kde(X.T)
+                    self.models[m,n] = kt.gaussian_kde(X.T)
                     bw = self.models[m,n].silverman_factor_ref().mean()
                     self.models[m,n].set_bandwidth(bw_method=bw,
                                                    bw_type='covariance')
                     self.models[m,n].bw_method = 'constant'
                 else:
-                    self.models[m,n] = gaussian_kde(X.T)
+                    self.models[m,n] = kt.gaussian_kde(X.T)
                     self.models[m,n].set_bandwidth(bw_method=self.bw_method,
                                                    bw_type=self.bw_type)
                 pbar.update(1)
@@ -405,4 +405,3 @@ def load(inpath, model_name):
             scskde.models[m, n] = kt.load(inpath, model)
 
     return scskde
-
