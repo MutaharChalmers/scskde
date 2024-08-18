@@ -1,1 +1,1 @@
-from .scskde import SCSKDE
+from .scskde import SCSKDE, load
