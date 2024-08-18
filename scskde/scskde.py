@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import numpy as np
 from kdetools import gaussian_kde
+import json
 from tqdm.auto import tqdm
 
 class SCSKDE():
@@ -12,7 +14,7 @@ class SCSKDE():
     synthetic realisations with optional exogenous forcing.
     """
 
-    def __init__(self, ordern=1, orderx=0, bw_method='silverman',
+    def __init__(self, ordern=1, orderx=None, bw_method='silverman',
                  bw_type='covariance', verbose=True):
         """Class constructor.
 
@@ -24,7 +26,7 @@ class SCSKDE():
             orderx : int, optional
                 Order of model, i.e. longest time lag, for exogenous features.
                 Should be less than or equal to ordern for current version.
-                Defaults to 0.
+                Defaults to None.
             bw_method : str, optional
                 KDE bandwidth selection method. Options are the same as for
                 `kdetools.gaussian_kde.set_bandwidth`. Defaults to 'silverman'.
@@ -36,11 +38,19 @@ class SCSKDE():
                 Defaults to True.
         """
 
-        if orderx > ordern:
+        if orderx is not None and orderx > ordern:
             print(f'orderx ({orderx}) should be <= ordern ({ordern})')
             return None
         if ordern < 1:
             print(f'ordern ({ordern}) should be >= 1')
+            return None
+        bw_methods = ['silverman', 'scott', 'silverman_ref', 'cv']
+        if isinstance(bw_method, str) and bw_method not in bw_methods:
+            print(f'bw_method ({bw_method}) should be one of {bw_methods}')
+            return None
+        bw_types = ['covariance', 'diagonal', 'equal']
+        if isinstance(bw_type, str) and bw_type not in bw_types:
+            print(f'bw_type ({bw_type}) should be one of {bw_types}')
             return None
 
         self.ordern = ordern
@@ -48,9 +58,6 @@ class SCSKDE():
         self.bw_method = bw_method
         self.bw_type = bw_type
         self.verbose = verbose
-
-        self.order = max(ordern, orderx)
-        self.Xs = {}
         self.models = {}
 
     def fit(self, Xn, depn, Xx=None, depx=None, periods=None):
@@ -95,7 +102,7 @@ class SCSKDE():
             self.uperiods = {0}
         elif periods.shape[0] == Xn.shape[0]:
             periods = np.array(periods)
-            self.uperiods = set(periods)
+            self.uperiods = set([int(p) for p in periods])
         else:
             print('`periods` must be the same length as `Xn.shape[0]`')
             return None
@@ -105,6 +112,9 @@ class SCSKDE():
             return None
 
         if Xx is not None:
+            if self.orderx is None:
+                print('`self.orderx` is None - cannot pass an exogenous forcing `Xx`')
+                return None
             if Xx.shape[0] != Xn.shape[0]:
                 print('`Xx` must have the same number of rows as `Xn`')
                 return None
@@ -123,10 +133,13 @@ class SCSKDE():
             self.dx = depx
             self.Nx = Xx.shape[1]
             Xx = np.array(Xx)
+        else:
+            self.dx = None
+            self.Nx = None
 
         mn, nn = zip(*[(m, n) for m, n in depn.keys()])
-        if set(mn) != set(periods):
-            print(f'Periods `m` in `depn` must match {set(periods)}')
+        if set(mn) != self.uperiods:
+            print(f'Periods `m` in `depn` must match {self.uperiods}')
             return None
         if set(nn) != set(range(Xn.shape[1])):
             print(f'Variables `n` in `depn` must match {range(Xn.shape[1])}')
@@ -155,16 +168,18 @@ class SCSKDE():
                           for lag in lags if self.dx.get((m,n), None) is not None]
 
                 # Select relevant records only
-                mask = np.roll(periods, -self.order)[:-self.order] == m
-                self.Xs[m,n] = np.hstack(XX + XN)[:-self.order][mask]
+                mask = np.roll(periods, -self.ordern)[:-self.ordern] == m
+                X = np.hstack(XX + XN)[:-self.ordern][mask]
 
                 # Fit KDEs
-                if self.bw_method == 'silverman':
-                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
+                if self.bw_method == 'silverman_ref':
+                    self.models[m,n] = gaussian_kde(X.T)
                     bw = self.models[m,n].silverman_factor_ref().mean()
-                    self.models[m,n].set_bandwidth(bw_method=bw)
+                    self.models[m,n].set_bandwidth(bw_method=bw,
+                                                   bw_type='covariance')
+                    self.models[m,n].bw_method = 'constant'
                 else:
-                    self.models[m,n] = gaussian_kde(self.Xs[m,n].T)
+                    self.models[m,n] = gaussian_kde(X.T)
                     self.models[m,n].set_bandwidth(bw_method=self.bw_method,
                                                    bw_type=self.bw_type)
                 pbar.update(1)
@@ -205,10 +220,10 @@ class SCSKDE():
         """
 
         # Input validation
-        if X0.shape != (batches, self.order, self.Nn):
+        if X0.shape != (batches, self.ordern, self.Nn):
             print(f'`X0.shape` {X0.shape} must be consistent with'
                   ' (# batches, model order, # of endogenous features)'
-                  f' ({batches}, {self.order}, {self.Nn})')
+                  f' ({batches}, {self.ordern}, {self.Nn})')
             return None
         else:
             X0 = np.array(X0)
@@ -237,10 +252,10 @@ class SCSKDE():
 
         # Initialise output array
         Y = np.zeros(shape=(batches, Nt, self.Nn))
-        Y[:,:self.order,:] = X0
+        Y[:,:self.ordern,:] = X0
 
         # Loop over time steps
-        for i in tqdm(range(self.order, Nt), disable=not self.verbose):
+        for i in tqdm(range(self.ordern, Nt), disable=not self.verbose):
             m = periods[i]
             # Loop over variables
             for n in range(self.Nn):
@@ -262,6 +277,57 @@ class SCSKDE():
                                                                  dims_cond=range(x_cond.shape[1]),
                                                                  seed=prng)[:,0,0]
         return Y
+
+    def save(self, outpath, model_name, overwrite=False):
+        """Save model to disk.
+
+        Parameters
+        ----------
+        outpath : str
+            Outpath.
+        model_name : str
+            Model name.
+        overwrite : bool
+            Overwrite data if it exists. Default False.
+        """
+
+        # Create directory
+        outpath = os.path.join(outpath, model_name)
+        try:
+            os.makedirs(outpath)
+        except:
+            if overwrite:
+                print('Model file exists; overwriting...')
+            else:
+                print('Model file exists; aborting...')
+                return None
+
+        # Define metadata to recreate the SCS-KDE model and write to file
+        meta = {'name': model_name,
+                'ordern': self.ordern,
+                'orderx': self.orderx,
+                'bw_method': self.bw_method,
+                'bw_type': self.bw_type,
+                'verbose': self.verbose,
+                'uperiods': list(self.uperiods),
+                'Nn': self.Nn,
+                'Nx': self.Nx}
+
+        with open(os.path.join(outpath, 'meta.json'), 'w') as f:
+            json.dump(meta, f)
+
+        # Loop over models and write each one to disk
+        for k, v in self.models.items():
+            v.save(outpath, '_'.join(map(str, k)), overwrite=True, verbose=False)
+
+        # Save dependency graphs after converting to JSONable formats
+        dn_str = {'_'.join(map(str, k)): v.tolist() for k, v in self.dn.items()}
+        with open(os.path.join(outpath, 'depn.json'), 'w') as f:
+            json.dump(dn_str, f)
+        if self.orderx is not None:
+            dx_str = {'_'.join(map(str, k)): v.tolist() for k, v in self.dx.items()}
+            with open(os.path.join(outpath, 'depx.json'), 'w') as f:
+                json.dump(dx_str, f)
 
     def whiten(self, X):
         """ZCA/Mahalanobis whitening.
@@ -291,3 +357,52 @@ class SCSKDE():
         S_root = v * np.sqrt(np.clip(u, np.spacing(1), np.inf)) @ v.T
         W = np.linalg.inv(S_root)
         return (X @ W.T) * X.std(axis=0)
+
+def load(inpath, model_name):
+    """Load model from disk.
+
+    Parameters
+    ----------
+    inpath : str
+        Inpath.
+    model_name : str
+        Model name.
+
+    Returns
+    -------
+    scskde : scskde.SCSKDE
+        Instance of SCS-KDE model.
+    """
+
+    # Load metadata
+    inpath = os.path.join(inpath, model_name)
+    with open(os.path.join(inpath, 'meta.json'), 'r') as f:
+        meta = json.load(f)
+
+    # Create object and define fitted characteristics
+    scskde = SCSKDE(ordern=meta['ordern'], orderx=meta['orderx'],
+                    bw_method=meta['bw_method'], bw_type=meta['bw_type'],
+                    verbose=meta['verbose'])
+    scskde.uperiods = set(meta['uperiods'])
+    scskde.Nn = meta['Nn']
+    scskde.Nx = meta['Nx']
+
+    # Load dependency matrices
+    with open(os.path.join(inpath, 'depn.json'), 'r') as f:
+        depn = json.load(f)
+    scskde.dn = {tuple(map(int, k.split('_'))): np.array(v)
+                 for k, v in depn.items()}
+    if meta['Nx'] is not None:
+        with open(os.path.join(inpath, 'depx.json'), 'r') as f:
+            depx = json.load(f)
+        scskde.dx = {tuple(map(int, k.split('_'))): np.array(v)
+                     for k, v in depx.items()}
+
+    # Load models
+    for model in os.listdir(inpath):
+        if os.path.isdir(os.path.join(inpath, model)):
+            m, n = tuple(map(int, model.split('_')))
+            scskde.models[m, n] = kt.load(inpath, model)
+
+    return scskde
+
