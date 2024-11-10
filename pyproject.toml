@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scskde"
-version = "0.1.0"
+version = "0.1.1"
 description = "Sequential Conditional Sampling from KDEs"
 authors = [
            { name = "Mutahar Chalmers", email = "mutahar.chalmers@gmail.com" },
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 requires-python = ">=3.8"
-dependencies = [ "numpy>=1.18", "kdetools>=0.1.8", "tqdm>=4.66.2"
+dependencies = [ "numpy>=1.18", "kdetools>=0.1.11", "tqdm>=4.66.2"
 ]
 
 [project.urls]
