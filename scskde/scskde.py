@@ -122,8 +122,8 @@ class SCSKDE():
                 print('Dependency dictionary `depx` must be specified')
                 return None
             mx, nx = zip(*[(m, n) for m, n in depx.keys()])
-            if set(mx) != self.uperiods:
-                print(f'Periods `m` in `depx` must match {self.uperiods}')
+            if not set(mx).issubset(self.uperiods):
+                print(f'Periods `m` in `depx` must be a subset of {self.uperiods}')
                 return None
             if not set(nx).issubset(set(range(Xx.shape[1]))):
                 print('Variables `n` in `depx` must be a subset of '
